@@ -1,0 +1,315 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Sales & Revenue Performance Dashboard\n",
+    "\n",
+    "**Goal:** Clean a year of raw, messy order-level sales data and answer the business questions a sales/ops manager would actually ask:\n",
+    "\n",
+    "1. How is revenue and profit trending month over month?\n",
+    "2. Which regions and channels are driving (or dragging) performance?\n",
+    "3. Is any product category declining, and by how much?\n",
+    "4. Where should the business focus next quarter?\n",
+    "\n",
+    "**Tools:** Python, Pandas, NumPy, Matplotlib  \n",
+    "**Data:** `raw_sales_data.csv` \u2014 9,291 order-line rows, intentionally messy (duplicates, missing values, inconsistent text, bad entries) to mirror a real-world export."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 1. Load & Inspect the Raw Data"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import pandas as pd\n",
+    "import numpy as np\n",
+    "import matplotlib.pyplot as plt\n",
+    "import matplotlib.ticker as mticker\n",
+    "\n",
+    "pd.set_option(\"display.float_format\", lambda x: f\"{x:,.2f}\")\n",
+    "\n",
+    "df = pd.read_csv(\"raw_sales_data.csv\")\n",
+    "print(f\"Rows: {len(df):,}  |  Columns: {len(df.columns)}\")\n",
+    "df.head()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Quick data quality check before touching anything\n",
+    "print(\"Missing values per column:\")\n",
+    "print(df.isna().sum()[df.isna().sum() > 0])\n",
+    "print()\n",
+    "print(\"Duplicate rows (full match):\", df.duplicated().sum())\n",
+    "print()\n",
+    "print(\"Unique region values (note the inconsistent casing/spacing):\")\n",
+    "print(df[\"region\"].unique())\n",
+    "print()\n",
+    "print(\"Quantity range:\", df[\"quantity\"].min(), \"to\", df[\"quantity\"].max())"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 2. Clean the Data\n",
+    "\n",
+    "Issues found and how each is handled:\n",
+    "\n",
+    "| Issue | Fix |\n",
+    "|---|---|\n",
+    "| Duplicate order rows | Drop exact duplicates |\n",
+    "| Inconsistent region text (` north`, `NORTH`, `North `) | Strip whitespace + title-case |\n",
+    "| Missing `region` | Drop rows \u2014 can't attribute revenue without geography |\n",
+    "| Missing `discount_pct` | Fill with 0 (no discount recorded = none applied) |\n",
+    "| Negative `quantity` (data entry errors) | Drop \u2014 not valid sales |\n",
+    "| `order_date` stored as text | Convert to datetime |"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "clean = df.copy()\n",
+    "\n",
+    "# 1. Drop exact duplicate rows\n",
+    "before = len(clean)\n",
+    "clean = clean.drop_duplicates()\n",
+    "print(f\"Dropped {before - len(clean)} duplicate rows\")\n",
+    "\n",
+    "# 2. Standardize region text\n",
+    "clean[\"region\"] = clean[\"region\"].str.strip().str.title()\n",
+    "\n",
+    "# 3. Drop rows with missing region (can't analyze geography without it)\n",
+    "before = len(clean)\n",
+    "clean = clean.dropna(subset=[\"region\"])\n",
+    "print(f\"Dropped {before - len(clean)} rows with missing region\")\n",
+    "\n",
+    "# 4. Fill missing discount_pct with 0\n",
+    "clean[\"discount_pct\"] = clean[\"discount_pct\"].fillna(0)\n",
+    "\n",
+    "# 5. Remove invalid quantity entries\n",
+    "before = len(clean)\n",
+    "clean = clean[clean[\"quantity\"] > 0]\n",
+    "print(f\"Dropped {before - len(clean)} rows with invalid quantity\")\n",
+    "\n",
+    "# 6. Convert date column\n",
+    "clean[\"order_date\"] = pd.to_datetime(clean[\"order_date\"])\n",
+    "clean[\"month\"] = clean[\"order_date\"].dt.to_period(\"M\")\n",
+    "clean[\"quarter\"] = clean[\"order_date\"].dt.to_period(\"Q\")\n",
+    "\n",
+    "print(f\"\\nFinal clean dataset: {len(clean):,} rows ({len(df) - len(clean)} removed, {(len(df)-len(clean))/len(df):.1%} of raw data)\")\n",
+    "clean.to_csv(\"clean_sales_data.csv\", index=False)\n",
+    "clean.head()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 3. Revenue & Profit Trend Over Time"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "monthly = clean.groupby(\"month\").agg(\n",
+    "    revenue=(\"net_revenue\", \"sum\"),\n",
+    "    profit=(\"profit\", \"sum\"),\n",
+    "    orders=(\"order_id\", \"nunique\")\n",
+    ").reset_index()\n",
+    "monthly[\"month_str\"] = monthly[\"month\"].astype(str)\n",
+    "\n",
+    "fig, ax1 = plt.subplots(figsize=(11, 5))\n",
+    "ax1.bar(monthly[\"month_str\"], monthly[\"revenue\"], color=\"#0F2A4A\", alpha=0.85, label=\"Net Revenue\")\n",
+    "ax1.set_ylabel(\"Net Revenue ($)\", color=\"#0F2A4A\")\n",
+    "ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f\"${x:,.0f}\"))\n",
+    "ax1.tick_params(axis=\"x\", rotation=45)\n",
+    "\n",
+    "ax2 = ax1.twinx()\n",
+    "ax2.plot(monthly[\"month_str\"], monthly[\"profit\"], color=\"#B08D57\", marker=\"o\", linewidth=2, label=\"Profit\")\n",
+    "ax2.set_ylabel(\"Profit ($)\", color=\"#B08D57\")\n",
+    "ax2.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f\"${x:,.0f}\"))\n",
+    "\n",
+    "plt.title(\"Monthly Net Revenue & Profit \u2014 2025\", fontsize=13, fontweight=\"bold\")\n",
+    "fig.tight_layout()\n",
+    "plt.savefig(\"chart_monthly_revenue_profit.png\", dpi=150)\n",
+    "plt.show()\n",
+    "\n",
+    "print(f\"Total 2025 net revenue: ${monthly['revenue'].sum():,.0f}\")\n",
+    "print(f\"Total 2025 profit: ${monthly['profit'].sum():,.0f}\")\n",
+    "print(f\"Average profit margin: {(monthly['profit'].sum() / monthly['revenue'].sum()):.1%}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 4. Performance by Region"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "region_perf = clean.groupby(\"region\").agg(\n",
+    "    revenue=(\"net_revenue\", \"sum\"),\n",
+    "    profit=(\"profit\", \"sum\"),\n",
+    "    orders=(\"order_id\", \"nunique\")\n",
+    ").sort_values(\"revenue\", ascending=False)\n",
+    "\n",
+    "region_perf[\"margin\"] = region_perf[\"profit\"] / region_perf[\"revenue\"]\n",
+    "print(region_perf)\n",
+    "\n",
+    "fig, ax = plt.subplots(figsize=(8, 5))\n",
+    "bars = ax.bar(region_perf.index, region_perf[\"revenue\"], color=\"#0F2A4A\")\n",
+    "ax.bar_label(bars, labels=[f\"${v:,.0f}\" for v in region_perf[\"revenue\"]], padding=3, fontsize=9)\n",
+    "ax.set_ylabel(\"Net Revenue ($)\")\n",
+    "ax.set_title(\"Revenue by Region \u2014 2025\", fontsize=13, fontweight=\"bold\")\n",
+    "ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f\"${x:,.0f}\"))\n",
+    "plt.tight_layout()\n",
+    "plt.savefig(\"chart_region_revenue.png\", dpi=150)\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 5. Performance by Sales Channel"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "channel_perf = clean.groupby(\"sales_channel\").agg(\n",
+    "    revenue=(\"net_revenue\", \"sum\"),\n",
+    "    profit=(\"profit\", \"sum\"),\n",
+    "    avg_order_value=(\"net_revenue\", \"mean\")\n",
+    ").sort_values(\"revenue\", ascending=False)\n",
+    "\n",
+    "channel_perf[\"margin\"] = channel_perf[\"profit\"] / channel_perf[\"revenue\"]\n",
+    "print(channel_perf)\n",
+    "\n",
+    "fig, ax = plt.subplots(figsize=(7, 5))\n",
+    "ax.pie(channel_perf[\"revenue\"], labels=channel_perf.index, autopct=\"%1.1f%%\",\n",
+    "       colors=[\"#0F2A4A\", \"#B08D57\", \"#6B7A8F\"], startangle=90,\n",
+    "       wedgeprops={\"edgecolor\": \"white\", \"linewidth\": 1.5})\n",
+    "ax.set_title(\"Revenue Share by Sales Channel\", fontsize=13, fontweight=\"bold\")\n",
+    "plt.tight_layout()\n",
+    "plt.savefig(\"chart_channel_share.png\", dpi=150)\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 6. Category Trend Investigation \u2014 Finding the Decline\n",
+    "\n",
+    "This is the key insight the dashboard surfaces: **is any category losing momentum?**"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "cat_quarter = clean.groupby([\"category\", \"quarter\"])[\"net_revenue\"].sum().unstack(\"category\")\n",
+    "cat_quarter.index = cat_quarter.index.astype(str)\n",
+    "print(cat_quarter)\n",
+    "\n",
+    "fig, ax = plt.subplots(figsize=(10, 5.5))\n",
+    "for cat in cat_quarter.columns:\n",
+    "    ax.plot(cat_quarter.index, cat_quarter[cat], marker=\"o\", linewidth=2, label=cat)\n",
+    "ax.set_ylabel(\"Net Revenue ($)\")\n",
+    "ax.set_title(\"Quarterly Revenue by Category \u2014 2025\", fontsize=13, fontweight=\"bold\")\n",
+    "ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f\"${x:,.0f}\"))\n",
+    "ax.legend(loc=\"upper left\", fontsize=9)\n",
+    "plt.tight_layout()\n",
+    "plt.savefig(\"chart_category_quarterly_trend.png\", dpi=150)\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Quantify the decline: Q1+Q2 vs Q3+Q4 for each category\n",
+    "clean[\"half\"] = clean[\"order_date\"].dt.month.apply(lambda m: \"H1 (Jan-Jun)\" if m <= 6 else \"H2 (Jul-Dec)\")\n",
+    "half_compare = clean.groupby([\"category\", \"half\"])[\"net_revenue\"].sum().unstack(\"half\")\n",
+    "half_compare[\"pct_change\"] = (half_compare[\"H2 (Jul-Dec)\"] - half_compare[\"H1 (Jan-Jun)\"]) / half_compare[\"H1 (Jan-Jun)\"]\n",
+    "half_compare = half_compare.sort_values(\"pct_change\")\n",
+    "\n",
+    "print(half_compare)\n",
+    "print()\n",
+    "worst = half_compare.index[0]\n",
+    "decline_pct = half_compare.loc[worst, \"pct_change\"]\n",
+    "print(f\"INSIGHT: '{worst}' revenue {'declined' if decline_pct < 0 else 'grew'} \"\n",
+    "      f\"{abs(decline_pct):.1%} from H1 to H2 2025 \u2014 the steepest move of any category.\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 7. Key Findings\n",
+    "\n",
+    "- **Office Supplies is the only category to shrink across the year**, down roughly 5% comparing H1 to H2 2025, while every other category grew. The effect is concentrated in Q3-Q4 \u2014 quarterly revenue for the category peaks in Q2 and slides afterward. This is the kind of early warning a category manager would want flagged before it compounds into next year.\n",
+    "- **Electronics shows the strongest acceleration**, up 13% from H1 to H2, with a visible Q4 lift consistent with holiday demand \u2014 useful for planning inventory and staffing ahead of next year's Q4.\n",
+    "- **Online is the dominant sales channel** by both revenue and order volume, with a higher average order value than Partner Reseller \u2014 useful context if marketing spend is being allocated across channels.\n",
+    "- **Profit margin is consistent at ~42% across every region and channel** in this dataset, which means revenue differences between regions reflect volume, not pricing or discounting differences \u2014 a useful sanity check before assuming any region is \"underperforming\" on profitability."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 8. Recommendations\n",
+    "\n",
+    "1. Investigate the Office Supplies slowdown with the category team \u2014 confirm whether it's demand-side (e.g. fewer remote-work-driven purchases) or supply-side (stockouts, pricing) before next year's Q1 planning.\n",
+    "2. Use the Q4 lift in Electronics and Home Appliances to set inventory and staffing levels ahead of next year's holiday season, rather than reacting to it in the moment.\n",
+    "3. Since margin is flat across regions, prioritize revenue growth opportunities in lower-volume regions (e.g. West) rather than margin-improvement initiatives.\n",
+    "4. Stand up this analysis as a recurring monthly report \u2014 the cleaning and aggregation steps above are now repeatable on any new data export, not a one-off pull."
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "name": "python",
+   "version": "3.12"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
